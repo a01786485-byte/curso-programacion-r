@@ -1,0 +1,643 @@
+---
+title: "Sesión 4. ¿Se puede pronosticar el éxito antes del draft?"
+subtitle: "Regresión lineal, cómo leer sus resultados y cómo calificar un pronóstico"
+author: "Programar con criterio en la era de la IA · Proyecto: pronosticar el éxito en la NFL"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    theme: flatly
+    highlight: tango
+---
+
+```{r formato, include=FALSE}
+# ==========================================================================
+# BLOQUE DE FORMATO
+# Solo sirve para que el documento HTML se vea bien. NO es parte de lo que
+# aprendemos en clase: no hace falta entenderlo ni modificarlo.
+# ==========================================================================
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, comment = "##",
+                      fig.width = 7, fig.height = 4, fig.align = "center")
+options(width = 100)   # que las tablas no se corten en el HTML
+
+# Compilar desde la carpeta de este archivo (así funcionan las rutas como "datos/...")
+if (!is.null(knitr::current_input())) {
+  knitr::opts_knit$set(root.dir = dirname(knitr::current_input(dir = TRUE)))
+}
+```
+
+```{css, echo=FALSE}
+/* BLOQUE DE FORMATO: colores de los recuadros del HTML. No es parte de la clase. */
+.aprende { border-left: 4px solid #2a78d6; background: #f3f7fd; padding: 0.6em 1em; margin: 1em 0; }
+.datos { border-left: 4px solid #1baf7a; background: #f1faf6; padding: 0.6em 1em; margin: 1em 0; }
+.tarea { border-left: 4px solid #2a78d6; background: #f3f7fd; padding: 0.6em 1em; margin: 1em 0; }
+.aviso { border-left: 4px solid #898781; background: #f6f6f4; padding: 0.6em 1em; margin: 1em 0; }
+.fundamentar { border: 2px solid #104281; border-radius: 6px; padding: 0.6em 1em; margin: 1em 0; }
+.mensaje { font-size: 1.2em; color: #104281; border-left: 5px solid #104281; padding: 0.3em 1em; margin: 1.2em 0; }
+.etiqueta { display: block; font-size: 0.78em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #6b6a65; margin-bottom: 0.3em; }
+```
+
+# Antes de empezar: dos tipos de código
+
+::: {.aviso}
+Igual que en las sesiones 2 y 3: al principio del archivo hay dos bloques marcados como **BLOQUE DE FORMATO**. Solo sirven para que el documento HTML se vea bien. **No son parte de la clase**: no hace falta entenderlos ni cambiarlos, y en el HTML no aparecen.
+
+**Todo el código que ves en el HTML es el código que estamos aprendiendo.** Cada línea lleva un comentario (lo que va después de `#`) que dice qué hace.
+:::
+
+Los recuadros son los mismos de siempre:
+
+::: {.aprende}
+[Lo que aprendes de R]{.etiqueta}
+Qué hace una función nueva y cómo se escribe.
+:::
+
+::: {.datos}
+[La decisión sobre los datos]{.etiqueta}
+Qué decidimos sobre los jugadores y por qué. Es la parte de la historia de la NFL.
+:::
+
+---
+
+# Hoy
+
+**Dónde nos quedamos.** En la sesión 3 vimos que la mediana del valor de carrera cae de 40 en la primera ronda a 1 en la séptima: los equipos no eligen a ciegas. Pero la ronda es el **juicio de los equipos**, y lo conocemos solo cuando ya decidieron. La pregunta del curso es otra: ¿qué se puede saber **antes**?
+
+**La pregunta de hoy:**
+
+::: {.mensaje}
+Con lo que se sabe de un jugador justo antes del draft (su edad, su cuerpo, su velocidad y lo que hizo en la universidad), ¿podemos pronosticar cuánto valor de carrera acumulará?
+:::
+
+Por eso, hoy **ningún modelo usa la ronda ni el número de selección**.
+
+**Lo que aprendes hoy de R:**
+
+| Función | Para qué sirve | Ejemplo |
+|---------|----------------|---------|
+| `sqrt()` | La raíz cuadrada | `sqrt(81)` da `9` |
+| `lm()` | Estimar una regresión lineal con los datos del pasado | `lm(career_av ~ age, data = entrena)` |
+| `coef()` | Ver solo los coeficientes de la regresión | `coef(modelo_edad)` |
+| `summary()` | La tabla completa de resultados: coeficientes, valores p, R² | `summary(modelo_multi)` |
+| `options(scipen = 999)` | Escribir los números con decimales normales, sin notación científica | Va en la receta |
+| `function()` | Crear una función propia para reusar código | `tabla_regresion <- function(modelo) { ... }` |
+| `knitr::kable()` | Mostrar una tabla con formato en el HTML | `knitr::kable(tabla_regresion(modelo_multi))` |
+| `predict()` | Usar la regresión para pronosticar a jugadores que no vio | `predict(modelo_multi, prueba)` |
+| `geom_smooth()` | Dibujar la recta encima de los puntos | `+ geom_smooth(method = "lm")` |
+| `cor()` *(en la tarea)* | La correlación entre dos columnas | `cor(base$forty, base$career_av)` |
+
+**Plan de la hora:**
+
+| Minutos | Qué hacemos |
+|---------|-------------|
+| 0–5 | La receta |
+| 5–10 | A quién pronosticamos, con qué datos, y cómo separar el pasado del futuro |
+| 10–17 | El pronóstico más sencillo y cómo se mide el error |
+| 17–27 | ¿Qué es una regresión lineal? |
+| 27–42 | Una regresión con varias variables y cómo leer `summary()` |
+| 42–52 | Pronosticar con la regresión y calificarla |
+| 52–60 | La tabla del día, lo que aprendimos y cómo es la Tarea 4 |
+
+---
+
+# 1. La receta
+
+Es la receta de las sesiones 2 y 3, con dos cambios. Primero, si el archivo `nfl_data.csv` no está en tu carpeta, ahora lo lee de internet, de la misma dirección fijada que usamos en la sesión 1; así tu archivo compila en cualquier computadora. Segundo, una línea le pide a R que escriba los números con decimales normales: sin ella, R escribe los números muy pequeños en *notación científica* (`6.051e-03` en lugar de `0.006051`), que hoy nos estorbaría.
+
+```{r}
+# Cargamos los paquetes: dplyr (manipular tablas) y ggplot2 (gráficas)
+library(dplyr)
+library(ggplot2)
+
+# Números con decimales normales, sin notación científica (0.006051 y no 6.051e-03)
+options(scipen = 999)
+
+# Buscamos el archivo: en la misma carpeta, luego en "datos" y, si no está, en internet
+if (file.exists("nfl_data.csv")) {
+  ruta_datos <- "nfl_data.csv"
+} else if (file.exists("datos/nfl_data.csv")) {
+  ruta_datos <- "datos/nfl_data.csv"
+} else {
+  ruta_datos <- paste0("https://raw.githubusercontent.com/phcs971/nfl-draft-dataset/",
+                       "54730eaae524dbff0647e966cd12c739724f807f/nfl_data.csv")
+}
+
+# Leemos el archivo: separado por ";", celdas vacías = NA, caracteres especiales en UTF-8
+nfl <- read.csv(ruta_datos, sep = ";", na.strings = "", encoding = "UTF-8")
+
+# ---------------------------------------------------------------
+# RECETA: de la base cruda (nfl) a la base de análisis (base)
+# ---------------------------------------------------------------
+tags_repetidos <- nfl$tag[duplicated(nfl$tag)]       # nombre + universidad repetidos
+
+base <- nfl %>%
+  rename(forty = X40_yard) %>%                       # nombre más cómodo
+  mutate(drafted = as.logical(drafted)) %>%          # "True"/"False" -> TRUE/FALSE
+  filter(drafted,                                    # solo elegidos: los únicos con carrera
+         year >= 2000, year <= 2014,                 # carreras de al menos diez temporadas
+         simple_pos != "ST",                         # sin pateadores ni despejadores
+         !(tag %in% tags_repetidos)) %>%             # sin filas con la carrera de otra persona
+  mutate(nunca_jugo  = is.na(career_av),             # elegido, pero nunca jugó
+         career_av   = ifelse(nunca_jugo, 0, career_av),
+         g           = ifelse(nunca_jugo, 0, g),
+         pro_bowl    = pro_bowls >= 1,               # fue al menos una vez al Pro Bowl
+         speed_score = weight * 200 / forty^4) %>%   # velocidad ajustada por peso
+  select(player_id, name, college, year, pos, simple_pos, draft_round, draft_pick, age,
+         height, weight, hand_size, arm_length, forty, vert_leap, broad_jump,
+         bench_press, shuttle, speed_score,
+         career_av, pro_bowls, pro_bowl, g, years_as_primary_starter, nunca_jugo,
+         college_games, college_pass_yds, college_pass_td, college_rush_yds,
+         college_rec_yds, college_tackles, college_sacks, college_ints)
+
+# Comprobación: deben ser 3,197 jugadores
+nrow(base)
+```
+
+---
+
+# 2. A quién pronosticamos y con qué
+
+## Un grupo: los que cargan o reciben el balón
+
+Las estadísticas de la universidad dependen de la posición: un corredor acumula yardas por carrera, un receptor acumula yardas por recepción y un liniero no acumula ninguna de las dos. Por eso hoy hacemos el modelo para un solo grupo, el de los jugadores que **cargan o reciben el balón**: corredores (`RB`), receptores (`WR`) y alas cerradas (`TE`). Para ellos, las yardas de la universidad sí dicen algo.
+
+```{r}
+balon <- base %>%
+  filter(simple_pos %in% c("RB", "WR", "TE"))   # corredores, receptores y alas cerradas
+
+nrow(balon)
+```
+
+Las variables que usaremos se conocen todas **antes del draft**:
+
+| Columna | Qué es | Unidad |
+|---------|--------|--------|
+| `age` | Edad el día del draft | años |
+| `height` | Estatura | pulgadas |
+| `weight` | Peso | libras |
+| `forty` | Tiempo en la carrera de 40 yardas del Combine | segundos: **menos es más rápido** |
+| `college_rec_yds` | Yardas por recepción en toda su carrera universitaria | yardas |
+| `college_rush_yds` | Yardas por carrera en toda su carrera universitaria | yardas |
+
+## Aprender del pasado y calificar con el futuro
+
+Un pronóstico solo sirve si funciona con jugadores **que todavía no conocemos**. Si lo calificamos con los mismos jugadores con los que lo construimos, es como presentar un examen con las preguntas que ya resolviste en la tarea: sacas buena calificación, pero eso no dice si aprendiste.
+
+Por eso hacemos como si estuviéramos en la primavera de 2011:
+
+- **Entrenamiento** (`entrena`): los drafts de 2000 a 2010. Es lo que el equipo ya conoce; de aquí **aprende** el modelo.
+- **Prueba** (`prueba`): los drafts de 2011 a 2014. Hacemos como si su carrera no hubiera pasado todavía; con ellos **calificamos** el modelo.
+
+```{r}
+entrena <- balon %>% filter(year <= 2010)   # el pasado: de aquí aprendemos
+prueba  <- balon %>% filter(year >= 2011)   # el "futuro": con ellos calificamos
+
+nrow(entrena)   # jugadores para aprender
+nrow(prueba)    # jugadores para calificar
+```
+
+::: {.datos}
+[La decisión sobre los datos]{.etiqueta}
+Separamos **por año**, no al azar. Así es como se usaría un pronóstico de verdad: el día del draft solo conoces a los jugadores de años anteriores. Si mezcláramos años, el modelo aprendería de jugadores "del futuro".
+:::
+
+---
+
+# 3. El pronóstico más sencillo y cómo se mide el error
+
+Empezamos por el pronóstico más sencillo posible: a **todos** los jugadores de prueba les pronosticamos lo mismo, el **promedio** del pasado. Es lo que haría un modelo que no sabe nada de los jugadores.
+
+```{r}
+pronostico_ref <- mean(entrena$career_av)   # el promedio de los elegidos de 2000 a 2010
+pronostico_ref
+```
+
+¿Qué tan lejos quedamos?
+
+::: {.aprende}
+[Lo que aprendes de R]{.etiqueta}
+El **error** de un jugador es lo que acumuló de verdad menos lo que pronosticamos. Si promediamos los errores tal cual, los positivos y los negativos se cancelan. Por eso los elevamos al cuadrado (`^2`), los promediamos y sacamos la raíz cuadrada (`sqrt()`) para volver a puntos. El resultado es el **error típico**: el tamaño normal de un error, en puntos de valor de carrera.
+
+`sqrt(mean((real - pronostico)^2))` se lee de adentro hacia afuera: resta, eleva al cuadrado, promedia y saca la raíz.
+:::
+
+Un ejemplo con cuatro jugadores, para hacerlo a mano. A los cuatro les pronosticamos 15:
+
+| Jugador | Valor real | Pronóstico | Error | Error al cuadrado |
+|---------|-----------:|-----------:|------:|------------------:|
+| A | 7 | 15 | −8 | 64 |
+| B | 13 | 15 | −2 | 4 |
+| C | 15 | 15 | 0 | 0 |
+| D | 31 | 15 | 16 | 256 |
+| | | | **Promedio** | **(64 + 4 + 0 + 256) / 4 = 81** |
+| | | | **Error típico** | **raíz de 81 = 9** |
+
+El jugador D pesa mucho: un error grande, al cuadrado, se vuelve enorme. El error típico castiga los errores grandes.
+
+R hace lo mismo con los `r nrow(prueba)` jugadores de `prueba`:
+
+```{r}
+# resta, al cuadrado, promedio y raíz
+error_ref <- sqrt(mean((prueba$career_av - pronostico_ref)^2))
+error_ref
+```
+
+Pronosticándole a todos el promedio, el error típico es de **19.3 puntos**. Esta cifra es nuestra **vara de medir**: un modelo que no le gane, no sirve de nada.
+
+---
+
+# 4. ¿Qué es una regresión lineal?
+
+Una **regresión lineal** pronostica con una **recta**. Empecemos con una sola variable, la edad:
+
+$$\text{pronóstico} = b_0 + b_1 \times \text{edad}$$
+
+- $b_0$, el **intercepto**: dónde empieza la recta, el pronóstico cuando la variable vale 0.
+- $b_1$, la **pendiente**: cuánto cambia el pronóstico cuando la variable sube 1.
+
+¿Y cómo se elige la recta? Cada jugador queda arriba o abajo de ella. Esa distancia vertical es su **error** (en estadística se llama *residuo*). La regresión elige la recta que hace **lo más pequeña posible la suma de esos errores al cuadrado**. Por eso se llama de *mínimos cuadrados*: es el mismo criterio con el que medimos el error típico en la sección 3.
+
+```{r, fig.height = 4.5}
+# Una regresión con una sola variable: la edad
+modelo_edad <- lm(career_av ~ age, data = entrena)
+
+# Tres jugadores para ver su error: dos que superaron su pronóstico y uno que se quedó corto
+tres <- entrena %>%
+  filter((name == "Antonio Brown"   & year == 2010) |
+         (name == "Marques Colston" & year == 2006) |
+         (name == "Mike Williams"   & year == 2005)) %>%
+  mutate(pronostico = predict(modelo_edad, .))   # dónde los pone la recta
+
+ggplot(entrena, aes(x = age, y = career_av)) +
+  # Capa 1: cada jugador de 2000 a 2010, un poco separados para que no se encimen
+  geom_jitter(color = "#2a78d6", alpha = 0.25, width = 0.15, height = 0) +
+  # Capa 2: la recta de la regresión
+  geom_smooth(method = "lm", se = FALSE, color = "#eb6834", linewidth = 1.2) +
+  # Capa 3: el error de los tres jugadores, como una línea vertical hasta la recta
+  geom_segment(data = tres, aes(xend = age, yend = pronostico), linewidth = 0.8) +
+  geom_point(data = tres, size = 2.5) +
+  geom_text(data = tres, aes(label = name), hjust = -0.1, vjust = -0.4) +
+  labs(title = "Los que llegan más jóvenes al draft acumulan más, en promedio",
+       subtitle = "Corredores, receptores y alas cerradas elegidos de 2000 a 2010",
+       x = "Edad el día del draft (años)",
+       y = "Valor de carrera (career_av)") +
+  theme_minimal()
+```
+
+El aviso *Removed 49 rows* dice que a 49 jugadores les falta la edad: no aparecen en la gráfica ni entran en la regresión. Volveremos a esto en la sección 5.
+
+::: {.aprende}
+[Lo que aprendes de R]{.etiqueta}
+`lm()` (de *linear model*, modelo lineal) estima la regresión. Se escribe `lm(lo_que_pronosticas ~ con_qué_lo_pronosticas, data = tabla)`. El símbolo `~` se lee "explicado por": `career_av ~ age` es "el valor de carrera explicado por la edad". `coef()` muestra los coeficientes: el intercepto y la pendiente.
+
+`geom_jitter()` es como `geom_point()`, pero mueve cada punto un poquito a los lados. La edad solo toma valores enteros y, sin moverlos, los puntos quedarían encimados en columnas.
+:::
+
+```{r}
+coef(modelo_edad)
+```
+
+La recta es: **pronóstico = 148.0 − 5.86 × edad**. Cada año más de edad resta 5.9 puntos. A un jugador de 21 años le pronostica 24.8; a uno de 23, 13.1; y a uno de 26, menos de cero: una recta no sabe que el valor de carrera casi nunca es negativo. Una explicación posible: los jugadores más talentosos suelen dejar la universidad antes y llegan más jóvenes al draft.
+
+::: {.aprende}
+[Lo que aprendes de R]{.etiqueta}
+`predict(modelo, tabla)` usa la regresión para pronosticar a cada fila de una tabla. Arriba lo usamos para ubicar a los tres jugadores sobre la recta.
+:::
+
+```{r}
+tres %>%
+  mutate(error = career_av - pronostico) %>%       # real menos pronóstico, con signo
+  select(name, year, pos, age, career_av, pronostico, error)
+```
+
+Antonio Brown quedó 73 puntos **arriba** de su pronóstico; Mike Williams quedó 13 **abajo**.
+
+## De una variable a varias
+
+Una regresión puede usar **varias variables a la vez**. Es la misma idea, con un coeficiente por variable:
+
+$$\text{pronóstico} = b_0 + b_1 \times \text{edad} + b_2 \times \text{estatura} + b_3 \times \text{peso} + b_4 \times \text{40 yardas} + b_5 \times \text{yardas por recepción} + b_6 \times \text{yardas por carrera}$$
+
+Lo importante es cómo se lee cada coeficiente: **cuánto cambia el pronóstico cuando esa variable sube 1 y las demás se quedan igual**. Por ejemplo, $b_4$ compara a dos jugadores de la misma edad, estatura, peso y yardas en la universidad, que solo difieren en su tiempo en 40 yardas. En economía a esto se le llama *ceteris paribus*: "lo demás constante".
+
+---
+
+# 5. Una regresión con varias variables y cómo leer `summary()`
+
+```{r}
+modelo_multi <- lm(career_av ~ age + height + weight + forty + college_rec_yds + college_rush_yds,
+                   data = entrena)
+summary(modelo_multi)
+```
+
+::: {.aprende}
+[Lo que aprendes de R]{.etiqueta}
+`summary()` muestra la tabla completa de resultados de una regresión. Tiene muchos números, pero para este curso se leen **cinco cosas**, de arriba a abajo:
+
+| Qué | Dónde está | Qué pregunta responde |
+|-----|------------|-----------------------|
+| 1. Los coeficientes | Columna `Estimate` | ¿Cuánto cambia el pronóstico si esa variable sube 1, con las demás igual? |
+| 2. El valor p y las estrellas | Columna `Pr(>|t|)` y los asteriscos | ¿Hay evidencia de que esa variable de verdad se relaciona con el valor de carrera? |
+| 3. Las observaciones eliminadas | La línea `observations deleted due to missingness` | ¿Con cuántos jugadores se estimó en realidad? |
+| 4. El R² y el R² ajustado | `Multiple R-squared` y `Adjusted R-squared` | ¿Qué parte de las diferencias entre jugadores explica el modelo? |
+| 5. La prueba F | `F-statistic` y su `p-value`, en la última línea | ¿El modelo en conjunto sirve más que no usar ninguna variable? |
+
+`Std. Error` y `t value` son los pasos intermedios para calcular el valor p: no hace falta interpretarlos. La parte de `Residuals` resume los errores de los jugadores de `entrena`; tampoco la usaremos.
+:::
+
+
+## 1. Los coeficientes (`Estimate`)
+
+| Variable | Coeficiente | Cómo se lee, con todo lo demás igual |
+|----------|------------:|--------------------------------------|
+| `(Intercept)` | 181.4 | El pronóstico para un jugador de 0 años, 0 pulgadas, 0 libras, que corre en 0 segundos y no tuvo yardas. Ese jugador no existe: el intercepto solo fija la altura y **no se interpreta** |
+| `age` | −4.35 | Cada año más de edad resta 4.4 puntos |
+| `height` | 0.66 | Cada pulgada más sumaría 0.7 puntos, pero mira su valor p |
+| `weight` | 0.164 | Cada libra más suma 0.16 puntos; 10 libras, unos 1.6 |
+| `forty` | −35.6 | Cada segundo más de tiempo resta 35.6 puntos. Como nadie es un segundo más lento, se lee mejor así: **una décima de segundo más rápido suma 3.6 puntos** |
+| `college_rec_yds` | 0.0061 | Cada yarda por recepción en la universidad suma 0.006 puntos: **1,000 yardas más suman unos 6** |
+| `college_rush_yds` | 0.0050 | Cada yarda por carrera en la universidad suma 0.005 puntos: **1,000 yardas más suman unos 5** |
+
+Comprobémoslo con dos receptores inventados, iguales en todo menos en sus yardas por recepción en la universidad:
+
+```{r}
+# Misma edad, estatura, peso y velocidad; uno tuvo 1,000 yardas por recepción y el otro 2,000
+dos_receptores <- data.frame(age              = c(22, 22),
+                             height           = c(73, 73),
+                             weight           = c(205, 205),
+                             forty            = c(4.50, 4.50),
+                             college_rec_yds  = c(1000, 2000),
+                             college_rush_yds = c(0, 0))
+predict(modelo_multi, dos_receptores)
+```
+
+La diferencia es de unos 6 puntos: 1,000 yardas × 0.006 puntos por yarda.
+
+## 2. El valor p y las estrellas (`Pr(>|t|)`)
+
+El coeficiente de una variable casi nunca sale exactamente 0, aunque la variable no tenga nada que ver: siempre hay algo de azar en los datos. El **valor p** responde: si esa variable en realidad no tuviera ninguna relación con el valor de carrera, ¿qué tan raro sería encontrar un coeficiente tan lejos de cero?
+
+- **Valor p pequeño** (menor que 0.05, con al menos una estrella): sería muy raro por azar. Lo tomamos como **evidencia de que la variable sí se relaciona** con el valor de carrera.
+- **Valor p grande**: el coeficiente podría ser puro azar. **No hay evidencia** de relación.
+
+Las estrellas resumen el valor p: `***` es menor que 0.001, `**` menor que 0.01, `*` menor que 0.05 y `.` menor que 0.1. La leyenda está debajo de la tabla (`Signif. codes`).
+
+En nuestro modelo hay de todo:
+
+- **Tres estrellas:** la edad, el tiempo en 40 yardas y las dos clases de yardas universitarias. Evidencia fuerte.
+- **Una estrella:** el peso (valor p de 0.027). Hay evidencia, pero más débil.
+- **Ninguna estrella:** la estatura (valor p de 0.26). Una vez que conocemos el peso y lo demás, la estatura no agrega evidencia.
+
+## 3. Las observaciones eliminadas
+
+Busca la línea `(153 observations deleted due to missingness)`. A 153 jugadores de `entrena` les falta al menos una de las seis variables (la edad, el tiempo en 40 yardas o las yardas de la universidad), y `lm()` los **quitó sin preguntar**: la regresión se estimó con 468 jugadores, no con 621.
+
+::: {.datos}
+[La decisión sobre los datos]{.etiqueta}
+Es la misma decisión de las tareas 1 y 2, ahora escondida dentro de una función: `lm()` usa solo a los jugadores que tienen **todas** las variables del modelo. Cada variable con faltantes que agregas puede cambiar quién está en el análisis. Por eso esa línea del `summary()` siempre se lee.
+:::
+
+## 4. El R² y el R² ajustado
+
+El **R²** (`Multiple R-squared`) es la proporción de las diferencias en valor de carrera entre jugadores que el modelo explica. Va de 0 (no explica nada) a 1 (lo explica todo). Aquí es **0.175**: el modelo explica el 17% de las diferencias. El 83% restante depende de cosas que el modelo no ve: lesiones, entrenadores, el equipo que lo eligió, suerte.
+
+El **R² ajustado** (`Adjusted R-squared`) es casi lo mismo, pero castiga las variables que no aportan. El R² **siempre** sube al agregar una variable, aunque sea inútil; el ajustado solo sube si la variable ayuda de verdad. Pruébalo agregando una columna de **puro azar**:
+
+```{r}
+set.seed(2026)                                          # para que el azar salga igual cada vez
+entrena_azar <- entrena %>% mutate(azar = rnorm(n()))   # una columna de números al azar
+
+modelo_azar <- lm(career_av ~ age + height + weight + forty + college_rec_yds + college_rush_yds + azar,
+                  data = entrena_azar)
+
+summary(modelo_multi)$r.squared        # R² sin la columna de azar
+summary(modelo_azar)$r.squared         # R² con la columna de azar: sube
+summary(modelo_multi)$adj.r.squared    # R² ajustado sin la columna de azar
+summary(modelo_azar)$adj.r.squared     # R² ajustado con la columna de azar: baja
+```
+
+El R² subió con una variable que no significa nada; el ajustado bajó. Por eso, para comparar modelos con distinto número de variables, se mira el **ajustado**.
+
+## 5. La prueba F
+
+La última línea del `summary()` responde si el modelo, con todas sus variables juntas, explica algo más que no usar ninguna. Su `p-value` es `< 0.00000000000000022`, prácticamente cero: el modelo sí explica algo. Con cientos de jugadores, esta prueba casi siempre sale bien; es la primera que se revisa, pero la que menos dice.
+
+::: {.datos}
+[La decisión sobre los datos]{.etiqueta}
+Los coeficientes describen lo que pasó **en promedio** con los elegidos de 2000 a 2010; no dicen que una cosa **cause** la otra. Que las yardas en la universidad sumen puntos no significa que dar más pases a un jugador universitario lo haga mejor profesional: puede ser que los mejores jugadores reciban más pases, desde la universidad.
+:::
+
+---
+
+# 6. Pronosticar con la regresión y calificarla
+
+Un R² de 0.17 dice qué tan bien se ajusta el modelo a los jugadores **con los que aprendió**. La pregunta de hoy es otra: ¿qué tan bien pronostica a jugadores **que no vio**? Usamos `predict()` con los jugadores de `prueba`, con los dos modelos: el de la edad y el de seis variables.
+
+```{r}
+prueba <- prueba %>%
+  mutate(pron_edad  = predict(modelo_edad, prueba),    # pronóstico con la edad
+         pron_multi = predict(modelo_multi, prueba))   # pronóstico con seis variables
+
+# ¿A cuántos jugadores no les pudo pronosticar el modelo de seis variables?
+sum(is.na(prueba$pron_multi))
+```
+
+A 48 jugadores de prueba les falta alguna variable y el modelo no puede pronosticarlos. Para que la comparación sea justa, calificamos a los tres pronósticos **con los mismos jugadores**: los que tienen pronóstico del modelo de seis variables.
+
+```{r}
+calificados <- prueba %>% filter(!is.na(pron_multi))   # solo los que tienen todas las variables
+nrow(calificados)
+
+error_ref   <- sqrt(mean((calificados$career_av - pronostico_ref)^2))         # a todos el promedio
+error_edad  <- sqrt(mean((calificados$career_av - calificados$pron_edad)^2))  # la edad
+error_multi <- sqrt(mean((calificados$career_av - calificados$pron_multi)^2)) # seis variables
+
+error_ref
+error_edad
+error_multi
+```
+
+Los dos modelos le ganan a "a todos el promedio", pero por poco. Y el de seis variables **no** le gana al de la edad sola, aunque su R² sea tres veces mayor. ¿Qué pasó? Comparemos lo que el modelo esperaba con lo que pasó:
+
+```{r}
+mean(calificados$pron_multi)   # lo que el modelo les pronosticó, en promedio
+mean(calificados$career_av)    # lo que acumularon de verdad, en promedio
+```
+
+::: {.datos}
+[La decisión sobre los datos]{.etiqueta}
+El modelo les pronosticó 20.3 puntos en promedio y acumularon 14.9: **se pasó por más de 5 puntos**. En el papel, los jugadores de 2011 a 2014 se veían mejores que los del pasado: llegaban más jóvenes, más rápidos y con unas 200 yardas más en la universidad, porque el fútbol universitario cambió y cada vez se pasa más el balón. El modelo aprendió que eso valía puntos, pero esta generación no rindió más.
+
+Dos lecciones para todo el curso. Primera: **un R² más alto con los datos del pasado no garantiza un mejor pronóstico**; un modelo se califica siempre con datos que no vio. Segunda: **un modelo supone que el mundo no cambia**; cuando cambia, se equivoca.
+:::
+
+¿Quiénes nos engañaron más?
+
+```{r}
+calificados %>%
+  mutate(error = career_av - pron_multi) %>%    # real menos pronóstico, con signo
+  arrange(desc(abs(error))) %>%                 # de mayor a menor error, sin importar el signo
+  select(name, year, pos, age, college_rec_yds, college_rush_yds, pron_multi, career_av, error) %>%
+  head(6)
+```
+
+Los errores más grandes son estrellas que nadie, ni el modelo, vio venir del todo: Travis Kelce, con solo 875 yardas en la universidad, o Davante Adams y DeAndre Hopkins, que superaron con creces lo que sus números universitarios prometían.
+
+---
+
+# 7. La tabla del día
+
+Juntamos los tres pronósticos de hoy: qué tan bien se ajustan al pasado (R² en entrenamiento) y qué tan bien pronostican el futuro (error típico en prueba, con los mismos `r nrow(calificados)` jugadores).
+
+```{r}
+data.frame(pronostico         = c("A todos, el promedio del pasado",
+                                  "Regresión con la edad",
+                                  "Regresión con seis variables"),
+           r2_entrenamiento   = round(c(0, summary(modelo_edad)$r.squared,
+                                        summary(modelo_multi)$r.squared), 3),
+           error_tipico_prueba = round(c(error_ref, error_edad, error_multi), 1))
+```
+
+
+---
+
+# Tarea 4 (después de clase): ¿la velocidad no sirve?
+
+::: {.tarea}
+**Tiempo estimado:** 25 minutos.
+
+**Qué entregas:** tu archivo `sesion4_trabajo.Rmd` (una copia de este documento con tus respuestas) en la carpeta `sesion-4/` de tu repositorio de GitHub.
+
+**Qué se valora:** que tomes una **decisión** y la **fundamentes** con tus propios números, y que leas bien los resultados de una regresión. No hay una respuesta única correcta: hay decisiones bien fundamentadas y decisiones mal fundamentadas.
+:::
+
+En clase, con corredores, receptores y alas cerradas, el tiempo en 40 yardas salió con tres estrellas: ser más rápido suma valor de carrera. Pero el analista jefe del equipo, que trabaja con **todas** las posiciones, te escribe:
+
+> "Revisé el tiempo en 40 yardas con los 3,197 elegidos. Su correlación con el valor de carrera es de 0.04, prácticamente cero. Hice una regresión y el coeficiente sale **positivo**: los más lentos acumulan **más** valor, y además ni siquiera es significativo. La velocidad no sirve para pronosticar el éxito. Propongo sacar la prueba de 40 yardas de todos nuestros modelos."
+
+Tu trabajo es decidir si le haces caso y explicar por qué.
+
+## Cómo se fundamenta una decisión
+
+::: {.fundamentar}
+Igual que en la Tarea 3, una decisión bien fundamentada tiene cuatro partes:
+
+1. **Decisión:** qué harías, en una frase.
+2. **Evidencia:** los números que la respaldan, calculados por ti.
+3. **Razonamiento:** por qué esos números llevan a esa decisión.
+4. **Límite:** qué no sabes, o qué tendría que pasar para que cambiaras de opinión.
+
+**Un ejemplo con lo de hoy** (no es la respuesta de la tarea):
+
+- *Decisión:* para pronosticar a los corredores, receptores y alas cerradas del próximo draft, no usaría todavía el modelo de seis variables.
+- *Evidencia:* explica el 17% de las diferencias en entrenamiento, pero con los jugadores de 2011 a 2014 su error típico es de 19.6 puntos, contra 19.5 del modelo con la edad sola, y les pronosticó 20.3 puntos en promedio cuando acumularon 14.9.
+- *Razonamiento:* un modelo vale por cómo pronostica a jugadores que no vio, no por su R²; este se pasó porque los jugadores nuevos llegaban con más yardas y no rindieron más.
+- *Límite:* solo lo comprobé con cuatro drafts y con un grupo de posiciones; con otros años, o ajustando las yardas por la época, el resultado podría cambiar.
+:::
+
+## Paso 1. Anticipa
+
+Antes de calcular nada: ¿crees que el analista tiene razón? Escribe una frase. 
+*Mi respuesta:*Yo creo que el analista esta equivocado, porque puede ser mucho mas importante en algunas posiciones que en otras el tiempo de 40 yardas, y eliminarlo completamente seria irracional.
+
+
+## Paso 2. Comprueba lo que dice el analista
+
+::: {.aprende}
+[Lo que aprendes de R]{.etiqueta}
+`cor(x, y)` mide qué tanto se mueven juntas dos columnas, de −1 a 1. Cerca de 0: casi no se mueven juntas. Positiva: cuando una sube, la otra tiende a subir. Negativa: cuando una sube, la otra tiende a bajar. `use = "complete.obs"` le dice que ignore a los jugadores sin tiempo en 40 yardas.
+
+**Ojo con el signo.** `forty` es un **tiempo**: menos segundos es **más rápido**. Un coeficiente o una correlación **negativa** entre `forty` y `career_av` significa que los más rápidos acumulan más valor.
+:::
+
+Quita los signos de gato (`#`) y ejecuta (atajo: selecciona las líneas y pulsa `Ctrl + Shift + C`; en Mac, `Cmd + Shift + C`). Ojo: aquí usamos `base`, con **todas** las posiciones, no solo el grupo de la clase. ¿Es cierto lo que dice el analista? Lee el coeficiente de `forty`, su valor p y la línea de observaciones eliminadas.
+
+```{r}
+ cor(base$forty, base$career_av, use = "complete.obs")   # la correlación con todos los jugadores
+
+ modelo_velocidad <- lm(career_av ~ forty, data = base)  # la regresión del analista
+ summary(modelo_velocidad)
+```
+
+## Paso 3. Busca más evidencia
+
+**a) ¿Quiénes son los lentos?** Calcula, para cada posición, cuántos jugadores tienen tiempo, su tiempo mediano y su valor de carrera mediano. Quita los `#`:
+
+```{r}
+ base %>%
+   group_by(simple_pos) %>%                                   # un grupo por posición
+   summarise(con_tiempo     = sum(!is.na(forty)),             # cuántos tienen tiempo en 40 yardas
+             tiempo_mediano = median(forty, na.rm = TRUE),    # su tiempo mediano
+             valor_mediano  = median(career_av)) %>%          # su valor de carrera mediano
+   arrange(tiempo_mediano)                                    # de los más rápidos a los más lentos
+```
+
+¿Qué posición es la más lenta? ¿Cómo es su valor de carrera comparado con el de las demás? Los jugadores mas lentos en promedio son los offensive liners, pero tambien tienen el mayor valor mediano
+
+**b) La correlación dentro de cada posición.** Compara a cada jugador solo con los de su misma posición. Completa el `___` y quita los `#`:
+
+```{r}
+library(knitr)
+library(gtsummary) 
+ base %>%
+   group_by(simple_pos) %>%                                                  # un grupo por posición
+   summarise(correlacion = cor(forty, career_av, use = "complete.obs")) %>%
+   arrange(correlacion)                                               # de la más negativa a la más positiva
+ knitr::kable(tbl_regression(modelo_velocidad))          
+```
+
+¿Cuántas de las ocho posiciones tienen una correlación negativa? ¿Qué significa ese signo, en palabras? Las 8 posiciones tienen un signo negativo, que significa que aumenta el valor de la carrera cuando decrementa el tiempo en completar las 40 yardas
+
+**c) Una regresión con la posición.** Agrega la posición al modelo del analista. Cuando una variable es de texto, como `simple_pos`, `lm()` le da un coeficiente a cada posición, comparada con la primera en orden alfabético (`DB`), que no aparece en la tabla. Quita los `#`:
+
+```{r}
+
+ modelo_velocidad_pos <- lm(career_av ~ forty + simple_pos, data = base)
+ summary(modelo_velocidad_pos)
+ knitr::kable(tbl_regression(modelo_velocidad_pos))
+```
+
+Lee el coeficiente de `forty`: ¿qué signo tiene ahora, qué valor p y cuántas estrellas? Escribe en una frase qué significa, a igualdad de posición, ser una décima de segundo más rápido (`forty` baja 0.1). Ahora forty es -28.27 y tiene 3 estrellas, que significa que una relacion es muy probable. Si fueras a bajar tu tiempo de forty por una decima de segundo, el modelo predice que tu valor subira por (-28.27)*(-.1)=2.82 millones de dolares
+
+**d) La gráfica.** Un panel por posición, con su recta. Quita los `#`. Verás un aviso de filas eliminadas (*Removed ... rows*): son los jugadores sin tiempo en 40 yardas.
+
+::: {.aprende}
+[Lo que aprendes de R]{.etiqueta}
+`facet_wrap(~ simple_pos)` hace la misma gráfica una vez por posición, en paneles separados.
+:::
+
+```{r, fig.width = 9, fig.height = 5}
+ ggplot(base, aes(x = forty, y = career_av)) +
+   geom_point(color = "#2a78d6", alpha = 0.2) +                  # cada jugador
+   geom_smooth(method = "lm", se = FALSE, color = "#eb6834") +  # la recta de cada posición
+   facet_wrap(~ simple_pos) +                                   # un panel por posición
+   labs(x = "Tiempo en 40 yardas (segundos)", y = "Valor de carrera (career_av)") +
+   theme_minimal()
+```
+
+## Paso 4. Decide y fundamenta
+
+Responde al analista con las cuatro partes. Usa **tus** números de los pasos 2 y 3.
+
+- **Decisión:**No deberiamos quitar la prueba de 40 yardas
+- **Evidencia:**
+1. Ajusted R2 sin agrupar por posicion:0.0009334 
+2. P-value ajustando por posicion: < 0.0000000000000002
+3. Estimate ajustando por posicion: -28.2730
+- **Razonamiento:**: La prueba de 40 yardas no deberia ser quitada porque aunque es verdad lo que dijo el analista de tiene un Pr(>|t|) alto, y por lo tanto no deberiamos confiar de ella, tambien es verdad que su R cuadrada es bajo, solo .0009, que significa que solo tenemos .1% de la informacion. Al adjuntar por posicion, vemos que Pr(>|t|) decrementa drasticamente, y recibimos 3 estrellas. El efecto tambien es significativo, el valor de carrera aumenta 28 millones por cada segundo mas rapido.
+- **Límite:**Hay ciertas posiciones en la que podria no aplicar
+
+**Para entregar:**
+
+1. En RStudio, botón **Knit**. Si aparece un error, el archivo **no está listo**: revisa el bloque que menciona el error antes de subirlo.
+2. En GitHub, entra a tu repositorio, abre la carpeta `sesion-4` (no la portada del repositorio), **Add file > Upload files**, sube `sesion4_trabajo.Rmd` y escribe un mensaje como *Agregar trabajo de la sesión 4*.
+
+| Criterio | Qué se revisa |
+|----------|---------------|
+| Evidencia calculada | Los pasos 2 y 3 están completos y el archivo compila con Knit |
+| Lectura de la regresión | Interpretas bien el signo, el valor p y las observaciones eliminadas en los dos modelos |
+| Decisión | Es clara y responde a la propuesta del analista |
+| Fundamento | La evidencia son números tuyos y el razonamiento explica por qué el resultado cambia al comparar dentro de cada posición |
+| Límite | Reconoces qué no sabes o qué te haría cambiar de opinión |
